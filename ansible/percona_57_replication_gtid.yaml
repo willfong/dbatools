@@ -1,0 +1,113 @@
+---
+# make ansible work on 16.04
+- hosts: all
+  gather_facts: False
+  become: true
+  tasks:
+  - name: install python 2
+    raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+- hosts: all
+  become: true
+  tasks:
+    - name: download Percona repo
+      get_url:
+        url="https://repo.percona.com/apt/percona-release_0.1-4.{{ ansible_distribution_release }}_all.deb"
+        dest="/tmp/percona.deb"
+    - name: install Percona repo
+      apt: deb="/tmp/percona.deb"
+    - name: remove repo file
+      file: path=/opt/percona.deb state=absent
+    - name: install Percona Server 5.7
+      apt: name={{item}} state=present update_cache=yes
+      with_items:
+        - percona-server-server-5.7
+        - python-mysqldb
+    - name: generating server id from ipv4
+      shell: perl -MSocket -le 'print unpack("N",inet_aton(shift||"{{item}}"))'
+      with_items: "{{ansible_default_ipv4.address}}"
+      register: ip2int
+    - set_fact:
+        serverid: "{{ip2int['results'][0]['stdout']}}"
+    - name: configure replication, server_id
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^server_id='
+        line: 'server_id={{serverid}}'
+      notify: restart mysql
+    - name: configure replication, gtid
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^gtid_mode='
+        line: 'gtid_mode=ON'
+      notify: restart mysql
+    - name: configure replication, enforce gtid
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^enforce-gtid-consistency='
+        line: 'enforce-gtid-consistency=true'
+      notify: restart mysql
+    - name: configure replication, skip-slave-start
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^skip_slave_start='
+        line: 'skip_slave_start=true'
+      notify: restart mysql
+    - name: configure replication, log-bin
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^log-bin='
+        line: 'log-bin=binlog'
+      notify: restart mysql
+    - name: configure replication, log-bin index
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^log-bin-index='
+        line: 'log-bin-index=binlog.index'
+      notify: restart mysql
+    - name: configure replication, relay_log
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^relay-log='
+        line: 'relay-log=relay'
+      notify: restart mysql
+    - name: configure replication, relay_log index
+      lineinfile:
+        path: /etc/mysql/percona-server.conf.d/mysqld.cnf
+        regexp: '^relay-log-index='
+        line: 'relay-log=relay.index'
+      notify: restart mysql
+
+  handlers:
+    - name: restart mysql
+      service: name=mysql state=restarted
+
+- hosts: master
+  become: true
+  tasks:
+    - name: create replication user
+      mysql_user:
+        user: root
+        name: r
+        password: r
+        host: '%'
+        priv: "*.*:REPLICATION SLAVE"
+        state: present
+
+- hosts: slave
+  become: true
+  tasks:
+    - name: set up replication
+      mysql_replication:
+        mode: changemaster
+        master_host: "{{hostvars[groups['master'][0]]['ansible_default_ipv4']['address']}}"
+        master_user: r
+        master_password: r
+        master_auto_position: yes
+    - name: start replication
+      mysql_replication:
+        mode: startslave
+    - name: set slaves to read only
+      mysql_variables:
+        variable: read_only
+        value: 1

@@ -1,0 +1,16 @@
+- name:  Tests
+  hosts: all
+
+  tasks:
+    - shell: echo "Here {{ item }}"
+      with_items: "{{ansible_default_ipv4.address}}"
+      register: hello
+
+    - debug: msg="{{hello['results'][0]['stdout']}}"
+    - name: make server id
+      shell: perl -MSocket -le 'print unpack("N",inet_aton(shift||"{{item}}"))'
+      with_items: "{{ansible_default_ipv4.address}}"
+      register: ip2int
+    - set_fact:
+        serverid: "{{ip2int['results'][0]['stdout']}}"
+    - debug: msg="MySQL Server ID {{serverid}}"

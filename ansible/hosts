@@ -1,0 +1,7 @@
+[master]
+host1
+
+[slave]
+host2
+host3
+
